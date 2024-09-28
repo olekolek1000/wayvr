@@ -1,0 +1,20 @@
+[package]
+name = "wayvr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.89"
+glow = "0.14.1"
+image = "0.25.2"
+khronos-egl = { version = "6.0.0", features = ["static"] }
+log = "0.4.22"
+nalgebra-glm = "0.19.0"
+pretty_env_logger = "0.5.0"
+smithay = { git = "https://github.com/Smithay/smithay.git", features = [
+  "desktop",
+  "xwayland",
+  "wayland_frontend",
+] }
+wayland-client = "0.31.6"
+wayland-egl = "0.32.4"
