@@ -1,26 +1,16 @@
-use anyhow::anyhow;
-use std::os::fd::OwnedFd;
-use std::rc::Rc;
-use std::sync::Arc;
-
-use smithay::backend::renderer::element::surface::{
-	render_elements_from_surface_tree, WaylandSurfaceRenderElement,
-};
-use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::utils::{draw_render_elements, on_commit_buffer_handler};
-use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer};
+use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_seat, wl_surface};
-use smithay::reexports::wayland_server::{self, ListeningSocket};
+use smithay::reexports::wayland_server::{self};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{
 	delegate_compositor, delegate_data_device, delegate_seat, delegate_shm, delegate_xdg_shell,
 };
+use std::os::fd::OwnedFd;
 
-use smithay::utils::{Rectangle, Serial, Size, Transform};
+use smithay::utils::Serial;
 use smithay::wayland::compositor::{
 	self, with_surface_tree_downward, SurfaceAttributes, TraversalAction,
 };
@@ -36,15 +26,12 @@ use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use wayland_server::protocol::wl_surface::WlSurface;
 use wayland_server::Client;
 
-use crate::time::get_millis;
-use crate::{egl_data, smithay_wrapper};
-
 pub struct Application {
-	compositor: compositor::CompositorState,
-	xdg_shell: XdgShellState,
-	seat_state: SeatState<Application>,
-	shm: ShmState,
-	data_device: DataDeviceState,
+	pub compositor: compositor::CompositorState,
+	pub xdg_shell: XdgShellState,
+	pub seat_state: SeatState<Application>,
+	pub shm: ShmState,
+	pub data_device: DataDeviceState,
 }
 
 impl compositor::CompositorHandler for Application {
@@ -103,7 +90,7 @@ impl SelectionHandler for Application {
 }
 
 #[derive(Default)]
-struct ClientState {
+pub struct ClientState {
 	compositor_state: compositor::CompositorClientState,
 }
 
@@ -189,129 +176,4 @@ pub fn send_frames_surface_tree(surface: &wl_surface::WlSurface, time: u32) {
 		},
 		|_, _, &()| true,
 	);
-}
-
-#[allow(unreachable_code)]
-pub fn run(display_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-	log::debug!("Initializing Wayland display");
-	let mut display: wayland_server::Display<Application> = wayland_server::Display::new()?;
-	let dh = display.handle();
-	let compositor = compositor::CompositorState::new::<Application>(&dh);
-	let xdg_shell = XdgShellState::new::<Application>(&dh);
-	let mut seat_state = SeatState::new();
-	let shm = ShmState::new::<Application>(&dh, Vec::new());
-	let data_device = DataDeviceState::new::<Application>(&dh);
-	let _seat = seat_state.new_wl_seat(&dh, "wayvr");
-
-	let mut state = Application {
-		compositor,
-		xdg_shell,
-		seat_state,
-		shm,
-		data_device,
-	};
-
-	log::debug!("Opening socket \"{}\"", display_addr);
-	let listener = ListeningSocket::bind(display_addr)?;
-	log::debug!("Listening to {}", display_addr);
-
-	let mut clients = Vec::new();
-
-	log::debug!("Spawning process");
-	let mut cmd = std::process::Command::new("konsole");
-	cmd.env_remove("DISPLAY"); // prevent running x11 apps
-	cmd.env("WAYLAND_DISPLAY", display_addr);
-	cmd.spawn()?;
-
-	log::debug!("Starting loop");
-
-	let time_start = get_millis();
-
-	// Init EGL display and context
-	let egl_data = egl_data::EGLData::new()?;
-
-	let smithay_display = smithay_wrapper::get_egl_display(&egl_data)?;
-	let smithay_context = smithay_wrapper::get_egl_context(&egl_data, &smithay_display)?;
-	let mut gles_renderer = unsafe { GlesRenderer::new(smithay_context)? };
-
-	let pixel_format = gles_renderer
-		.egl_context()
-		.pixel_format()
-		.ok_or(anyhow!("Failed to get pixel format"))?;
-
-	let size_w: i32 = 1280;
-	let size_h: i32 = 720;
-
-	let surface_data = Rc::new(smithay_wrapper::SurfaceData::new(
-		&egl_data, size_w, size_h,
-	)?);
-
-	let smithay_surface = Rc::new(smithay_wrapper::create_egl_surface(
-		&egl_data,
-		&smithay_display,
-		pixel_format,
-		surface_data.clone(),
-	)?);
-
-	gles_renderer.bind(smithay_surface)?;
-
-	let mut ticks = 0;
-
-	loop {
-		ticks += 1;
-		let size = Size::from((size_w, size_h));
-		let damage: Rectangle<i32, smithay::utils::Physical> =
-			Rectangle::from_loc_and_size((0, 0), size);
-
-		let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = state
-			.xdg_shell
-			.toplevel_surfaces()
-			.iter()
-			.flat_map(|surface| {
-				render_elements_from_surface_tree(
-					&mut gles_renderer,
-					surface.wl_surface(),
-					(0, 0),
-					1.0,
-					1.0,
-					Kind::Unspecified,
-				)
-			})
-			.collect();
-
-		let mut frame = gles_renderer.render(size, Transform::Flipped180)?;
-		frame.clear(Color32F::new(0.3, 0.3, 0.3, 1.0), &[damage])?;
-
-		draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
-
-		let _sync_point = frame.finish()?;
-
-		for surface in state.xdg_shell.toplevel_surfaces() {
-			send_frames_surface_tree(surface.wl_surface(), (get_millis() - time_start) as u32);
-		}
-
-		if let Some(stream) = listener.accept()? {
-			log::debug!("Stream accepted: {:?}", stream);
-
-			let client = display
-				.handle()
-				.insert_client(stream, Arc::new(ClientState::default()))
-				.unwrap();
-			clients.push(client);
-		}
-
-		display.dispatch_clients(&mut state)?;
-		display.flush_clients()?;
-
-		// TODO: use epoll fd in the future
-		std::thread::sleep(std::time::Duration::from_millis(10));
-
-		smithay_wrapper::debug_save_pixmap(
-			&egl_data,
-			&surface_data,
-			format!("debug/out_{}.png", ticks % 5).as_str(),
-		)?;
-	}
-
-	Ok(())
 }

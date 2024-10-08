@@ -1,22 +1,19 @@
 use std::{rc::Rc, sync::Arc};
 
 use super::egl_data;
-use glow::HasContext;
 use smithay::backend::egl as smithay_egl;
 
 pub struct SurfaceData {
 	pub surface: khronos_egl::Surface,
-	pub width: i32,
-	pub height: i32,
 }
 
 impl SurfaceData {
-	pub fn new(data: &egl_data::EGLData, width: i32, height: i32) -> anyhow::Result<Self> {
+	pub fn new(data: &egl_data::EGLData, width: u32, height: u32) -> anyhow::Result<Self> {
 		let egl_pbuffer_attribs = [
 			khronos_egl::WIDTH,
-			width,
+			width as i32,
 			khronos_egl::HEIGHT,
-			height,
+			height as i32,
 			khronos_egl::NONE,
 		];
 
@@ -25,11 +22,7 @@ impl SurfaceData {
 				.egl
 				.create_pbuffer_surface(data.display, data.config, &egl_pbuffer_attribs)?;
 
-		Ok(Self {
-			surface,
-			width,
-			height,
-		})
+		Ok(Self { surface })
 	}
 }
 
@@ -82,38 +75,4 @@ pub fn create_egl_surface(
 ) -> anyhow::Result<smithay_egl::EGLSurface> {
 	let native = NativeSurfaceWrapper::new(surface_data)?;
 	Ok(unsafe { smithay_egl::EGLSurface::new(display, pixel_format, data.config.as_ptr(), native)? })
-}
-
-pub fn debug_save_pixmap(
-	data: &egl_data::EGLData,
-	surface: &SurfaceData,
-	path: &str,
-) -> anyhow::Result<()> {
-	log::trace!("Saving pixmap image {}", path);
-
-	data.make_current(&surface.surface)?;
-
-	let mut pixels = vec![0u8; (surface.width * surface.height * 4) as usize];
-
-	unsafe {
-		data.gl.read_pixels(
-			0,
-			0,
-			surface.width,
-			surface.height,
-			glow::RGBA,
-			glow::UNSIGNED_BYTE,
-			glow::PixelPackData::Slice(&mut pixels),
-		);
-	}
-
-	image::save_buffer(
-		path,
-		&pixels,
-		surface.width as u32,
-		surface.height as u32,
-		image::ExtendedColorType::Rgba8,
-	)?;
-
-	Ok(())
 }

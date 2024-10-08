@@ -7,6 +7,8 @@ pub struct EGLData {
 	pub display: khronos_egl::Display,
 	pub config: khronos_egl::Config,
 	pub context: khronos_egl::Context,
+
+	#[allow(dead_code)]
 	pub gl: Rc<glow::Context>,
 }
 
@@ -71,6 +73,7 @@ impl EGLData {
 		}
 	}
 
+	#[allow(dead_code)]
 	pub fn make_current(&self, surface: &khronos_egl::Surface) -> anyhow::Result<()> {
 		self.egl.make_current(
 			self.display,
