@@ -1,22 +1,20 @@
 #![allow(dead_code)]
 
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
+use anyhow::bail;
 use smithay::{
 	backend::{
-		egl::{
-			ffi::{
-				egl::types::{EGLBoolean, EGLImageKHR},
-				EGLint,
-			},
-			EGLDisplay,
+		egl::ffi::{
+			egl::types::{EGLBoolean, EGLImageKHR, EGLuint64KHR},
+			EGLint,
 		},
 		renderer::{
 			element::{
 				surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
 				Kind,
 			},
-			gles::GlesRenderer,
+			gles::{ffi, GlesRenderer, GlesTexture},
 			utils::draw_render_elements,
 			Bind, Color32F, Frame, Renderer,
 		},
@@ -32,12 +30,22 @@ use smithay::{
 pub use crate::egl_data;
 
 use crate::{
+	bind_egl_function,
 	comp::{send_frames_surface_tree, Application, ClientState},
 	smithay_wrapper,
 	time::get_millis,
 };
 
 const STARTING_WAYLAND_ADDR_IDX: u32 = 20;
+
+#[derive(Clone)]
+pub struct DMAbufData {
+	pub fd: i32,
+	pub stride: i32,
+	pub offset: i32,
+	pub modifiers: Vec<u64>,
+	pub fourcc: std::ffi::c_int,
+}
 
 pub struct WayVR {
 	time_start: u64,
@@ -49,7 +57,8 @@ pub struct WayVR {
 	listener: ListeningSocket,
 	display: wayland_server::Display<Application>,
 	egl_data: egl_data::EGLData,
-	surface_data: Rc<smithay_wrapper::SurfaceData>,
+	egl_image: khronos_egl::Image,
+	dmabuf_data: DMAbufData,
 
 	// TODO: Cleanup of expired clients
 	clients: Vec<wayland_server::Client>,
@@ -64,15 +73,54 @@ pub enum MouseIndex {
 	Right,
 }
 
+//eglExportDMABUFImageMESA
 pub type PFNEGLEXPORTDMABUFIMAGEMESAPROC = Option<
 	unsafe extern "C" fn(
-		dpy: EGLDisplay,
+		dpy: khronos_egl::EGLDisplay,
 		image: EGLImageKHR,
 		fds: *mut i32,
 		strides: *mut EGLint,
 		offsets: *mut EGLint,
 	) -> EGLBoolean,
 >;
+
+//eglQueryDmaBufModifiersEXT
+pub type PFNEGLQUERYDMABUFMODIFIERSEXTPROC = Option<
+	unsafe extern "C" fn(
+		dpy: khronos_egl::EGLDisplay,
+		format: EGLint,
+		max_modifiers: EGLint,
+		modifiers: *mut EGLuint64KHR,
+		external_only: *mut EGLBoolean,
+		num_modifiers: *mut EGLint,
+	) -> EGLBoolean,
+>;
+
+//eglQueryDmaBufFormatsEXT
+pub type PFNEGLQUERYDMABUFFORMATSEXTPROC = Option<
+	unsafe extern "C" fn(
+		dpy: khronos_egl::EGLDisplay,
+		max_formats: EGLint,
+		formats: *mut EGLint,
+		num_formats: *mut EGLint,
+	) -> EGLBoolean,
+>;
+
+//eglExportDMABUFImageQueryMESA
+pub type PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC = Option<
+	unsafe extern "C" fn(
+		dpy: khronos_egl::EGLDisplay,
+		image: khronos_egl::EGLImage,
+		fourcc: *mut std::ffi::c_int,
+		num_planes: *mut std::ffi::c_int,
+		modifiers: *mut EGLuint64KHR,
+	) -> EGLBoolean,
+>;
+
+const FOURCC: u32 = 0x34324258;
+
+const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: usize = 0x3443;
+const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: usize = 0x3444;
 
 impl WayVR {
 	pub fn new(width: u32, height: u32) -> anyhow::Result<Self> {
@@ -132,54 +180,212 @@ impl WayVR {
 		let smithay_context = smithay_wrapper::get_egl_context(&egl_data, &smithay_display)?;
 		let mut gles_renderer = unsafe { GlesRenderer::new(smithay_context)? };
 
-		let pixel_format = gles_renderer
-			.egl_context()
-			.pixel_format()
-			.ok_or(anyhow::anyhow!("Failed to get pixel format"))?;
+		let tex_format = ffi::RGB;
+		let internal_format = ffi::RGB8;
 
-		let surface_data = Rc::new(smithay_wrapper::SurfaceData::new(&egl_data, width, height)?);
+		// Create framebuffer texture
+		let tex = gles_renderer.with_context(|gl| unsafe {
+			let mut tex = 0;
+			gl.GenTextures(1, &mut tex);
+			gl.BindTexture(ffi::TEXTURE_2D, tex);
+			gl.TexParameteri(
+				ffi::TEXTURE_2D,
+				ffi::TEXTURE_MIN_FILTER,
+				ffi::NEAREST as i32,
+			);
+			gl.TexParameteri(
+				ffi::TEXTURE_2D,
+				ffi::TEXTURE_MAG_FILTER,
+				ffi::NEAREST as i32,
+			);
+			gl.TexImage2D(
+				ffi::TEXTURE_2D,
+				0,
+				internal_format as i32,
+				width as i32,
+				height as i32,
+				0,
+				tex_format,
+				ffi::UNSIGNED_BYTE,
+				std::ptr::null(),
+			);
+			gl.BindTexture(ffi::TEXTURE_2D, 0);
+			tex
+		})?;
 
-		let func_name = "eglExportDMABUFImageMESA";
-		let raw_fn_egl_export_dmabuf_image_mesa =
-			egl_data
-				.egl
-				.get_proc_address(func_name)
-				.ok_or(anyhow::anyhow!(
-					"Required EGL function {} not found",
-					func_name
-				))?;
+		let opaque = false;
+		let size = (width as i32, height as i32).into();
+		let gles_texture =
+			unsafe { GlesTexture::from_raw(&gles_renderer, Some(tex_format), opaque, tex, size) };
 
-		let fn_egl_export_dmabuf_image_mesa = unsafe {
-			std::mem::transmute_copy::<_, PFNEGLEXPORTDMABUFIMAGEMESAPROC>(
-				&raw_fn_egl_export_dmabuf_image_mesa,
-			)
-			.unwrap() /* should never fail */
-		};
-
-		//fixme EGL_BAD_PARAMETER
-		let image = unsafe {
+		// Create EGL image from texture
+		let egl_image = unsafe {
 			egl_data.egl.create_image(
 				egl_data.display,
 				egl_data.context,
 				khronos_egl::GL_TEXTURE_2D as std::ffi::c_uint,
-				khronos_egl::ClientBuffer::from_ptr(surface_data.surface.as_ptr()),
-				&[khronos_egl::ATTRIB_NONE],
+				khronos_egl::ClientBuffer::from_ptr(gles_texture.tex_id() as *mut std::ffi::c_void),
+				&[
+					khronos_egl::WIDTH as usize,
+					width as usize,
+					khronos_egl::HEIGHT as usize,
+					height as usize,
+					khronos_egl::ATTRIB_NONE,
+				],
 			)?
 		};
 
-		/*fn_egl_export_dmabuf_image_mesa(
-			egl_data.display.as_ptr(), /* EGLDisplay dpy */
-			surface_data.surface.as_ptr(),
-		);*/
+		// Create dmabuf from EGL image
 
-		let smithay_surface = Rc::new(smithay_wrapper::create_egl_surface(
-			&egl_data,
-			&smithay_display,
-			pixel_format,
-			surface_data.clone(),
-		)?);
+		let mut dmabuf_data = unsafe {
+			/*let egl_export_dmabuf_image_query_mesa = bind_egl_function!(
+							PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC,
+							&egl_data.load_func("eglExportDMABUFImageQueryMESA")?
+						);
 
-		gles_renderer.bind(smithay_surface)?;
+						let mut fourcc = FOURCC as std::ffi::c_int;
+						let mut num_planes: std::ffi::c_int = 1;
+						let mut modifiers: [EGLuint64KHR; 16] = [0; 16];
+
+						if egl_export_dmabuf_image_query_mesa(
+							egl_data.display.as_ptr(),
+							egl_image.as_ptr(),
+							&mut fourcc,
+							&mut num_planes,
+							modifiers.as_mut_ptr(),
+						) != khronos_egl::TRUE
+						{
+							bail!("eglExportDMABUFImageQueryMESA failed")
+						}
+
+						//let modifier = 0x20000002086bf04;
+
+						if num_planes != 1 {
+							bail!("expected exactly one dmabuf plane")
+						}
+
+						let modifier = modifiers[0];
+						if modifier == 0xFFFFFFFFFFFFFF {
+							bail!("modifier is -1");
+						}
+			*/
+			let egl_export_dmabuf_image_mesa = bind_egl_function!(
+				PFNEGLEXPORTDMABUFIMAGEMESAPROC,
+				&egl_data.load_func("eglExportDMABUFImageMESA")?
+			);
+
+			let mut fds: [i32; 3] = [0; 3];
+			let mut strides: [i32; 3] = [0; 3];
+			let mut offsets: [i32; 3] = [0; 3];
+
+			if egl_export_dmabuf_image_mesa(
+				egl_data.display.as_ptr(),
+				egl_image.as_ptr(),
+				fds.as_mut_ptr(),
+				strides.as_mut_ptr(),
+				offsets.as_mut_ptr(),
+			) != khronos_egl::TRUE
+			{
+				anyhow::bail!("eglExportDMABUFImageMESA failed");
+			}
+
+			// many planes in RGB data?
+			debug_assert!(fds[1] == 0);
+			debug_assert!(strides[1] == 0);
+			debug_assert!(offsets[1] == 0);
+
+			DMAbufData {
+				fd: fds[0],
+				stride: strides[0],
+				offset: offsets[0],
+				fourcc: 0,
+				modifiers: Vec::new(),
+			}
+		};
+
+		unsafe {
+			let egl_query_dmabuf_formats_ext = bind_egl_function!(
+				PFNEGLQUERYDMABUFFORMATSEXTPROC,
+				&egl_data.load_func("eglQueryDmaBufFormatsEXT")?
+			);
+
+			// Query format count
+			let mut num_formats: EGLint = 0;
+			egl_query_dmabuf_formats_ext(
+				egl_data.display.as_ptr(),
+				0,
+				std::ptr::null_mut(),
+				&mut num_formats,
+			);
+
+			// Retrieve formt list
+			let mut formats: Vec<i32> = vec![0; num_formats as usize];
+			egl_query_dmabuf_formats_ext(
+				egl_data.display.as_ptr(),
+				num_formats,
+				formats.as_mut_ptr(),
+				&mut num_formats,
+			);
+
+			for (idx, format) in formats.iter().enumerate() {
+				let bytes = format.to_le_bytes();
+				log::info!(
+					"idx {}, format {}{}{}{} (hex {:#x})",
+					idx,
+					bytes[0] as char,
+					bytes[1] as char,
+					bytes[2] as char,
+					bytes[3] as char,
+					format
+				);
+			}
+
+			let target_format = 0x34325258; //XR24
+			let egl_query_dmabuf_modifiers_ext = bind_egl_function!(
+				PFNEGLQUERYDMABUFMODIFIERSEXTPROC,
+				&egl_data.load_func("eglQueryDmaBufModifiersEXT")?
+			);
+
+			let mut num_mods: EGLint = 0;
+
+			// Query modifier count
+			egl_query_dmabuf_modifiers_ext(
+				egl_data.display.as_ptr(),
+				target_format,
+				0,
+				std::ptr::null_mut(),
+				std::ptr::null_mut(),
+				&mut num_mods,
+			);
+
+			if num_mods == 0 {
+				bail!("eglQueryDmaBufModifiersEXT modifier count is zero");
+			}
+
+			let mut mods: Vec<u64> = vec![0; num_mods as usize];
+			egl_query_dmabuf_modifiers_ext(
+				egl_data.display.as_ptr(),
+				target_format,
+				num_mods,
+				mods.as_mut_ptr(),
+				std::ptr::null_mut(),
+				&mut num_mods,
+			);
+
+			if mods[0] == 0xFFFFFFFFFFFFFFFF {
+				bail!("mods is -1")
+			}
+
+			log::info!("Mods:");
+			for modifier in &mods {
+				log::info!("{:#x}", modifier);
+			}
+
+			dmabuf_data.modifiers = mods;
+			dmabuf_data.fourcc = target_format;
+		}
+
+		gles_renderer.bind(gles_texture)?;
 
 		Ok(Self {
 			state,
@@ -193,7 +399,8 @@ impl WayVR {
 			clients: Vec::new(),
 			process_children: Vec::new(),
 			egl_data,
-			surface_data,
+			egl_image,
+			dmabuf_data,
 		})
 	}
 
@@ -230,8 +437,8 @@ impl WayVR {
 			})
 			.collect();
 
-		let mut frame = self.gles_renderer.render(size, Transform::Flipped180)?;
-		frame.clear(Color32F::new(0.3, 0.3, 0.3, 1.0), &[damage])?;
+		let mut frame = self.gles_renderer.render(size, Transform::Normal)?;
+		frame.clear(Color32F::new(1.0, 1.0, 1.0, 0.1), &[damage])?;
 
 		draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
 
@@ -257,11 +464,12 @@ impl WayVR {
 		self.display.dispatch_clients(&mut self.state)?;
 		self.display.flush_clients()?;
 
-		Ok(())
-	}
+		self.gles_renderer.with_context(|gl| unsafe {
+			gl.Flush();
+			gl.Finish();
+		})?;
 
-	pub fn get_image_data(&mut self) -> (&egl_data::EGLData, &khronos_egl::Surface) {
-		(&self.egl_data, &self.surface_data.surface)
+		Ok(())
 	}
 
 	pub fn send_mouse_move(&mut self, _x: u32, _y: u32) {}
@@ -271,4 +479,8 @@ impl WayVR {
 	pub fn send_mouse_up(&mut self, _index: MouseIndex) {}
 
 	pub fn send_mouse_scroll(&mut self, _delta: f32) {}
+
+	pub fn get_dmabuf_data(&self) -> DMAbufData {
+		self.dmabuf_data.clone()
+	}
 }

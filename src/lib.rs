@@ -23,12 +23,9 @@ mod tests {
 	}
 
 	#[test]
-	fn test() {
+	fn test() -> std::result::Result<(), Box<dyn std::error::Error>> {
 		std::env::set_var("RUST_LOG", "trace");
 		pretty_env_logger::init();
-
-		if let Err(e) = run() {
-			log::error!("Unhandled error: {}", e);
-		}
+		run()
 	}
 }

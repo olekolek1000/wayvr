@@ -12,7 +12,22 @@ pub struct EGLData {
 	pub gl: Rc<glow::Context>,
 }
 
+#[macro_export]
+macro_rules! bind_egl_function {
+	($func_type:ident, $func:expr) => {
+		std::mem::transmute_copy::<_, $func_type>($func).unwrap()
+	};
+}
+
 impl EGLData {
+	pub fn load_func(&self, func_name: &str) -> anyhow::Result<extern "system" fn()> {
+		let raw_fn = self.egl.get_proc_address(func_name).ok_or(anyhow::anyhow!(
+			"Required EGL function {} not found",
+			func_name
+		))?;
+		Ok(raw_fn)
+	}
+
 	pub fn new() -> anyhow::Result<EGLData> {
 		unsafe {
 			let egl = khronos_egl::Instance::new(khronos_egl::Static);
