@@ -178,8 +178,8 @@ impl WayVR {
 		let smithay_context = smithay_wrapper::get_egl_context(&egl_data, &smithay_display)?;
 		let mut gles_renderer = unsafe { GlesRenderer::new(smithay_context)? };
 
-		let tex_format = ffi::RGB;
-		let internal_format = ffi::RGB8;
+		let tex_format = ffi::RGBA;
+		let internal_format = ffi::RGBA8;
 
 		// Create framebuffer texture
 		let tex = gles_renderer.with_context(|gl| unsafe {

@@ -7,9 +7,6 @@ pub struct EGLData {
 	pub display: khronos_egl::Display,
 	pub config: khronos_egl::Config,
 	pub context: khronos_egl::Context,
-
-	#[allow(dead_code)]
-	pub gl: Rc<glow::Context>,
 }
 
 #[macro_export]
@@ -74,16 +71,11 @@ impl EGLData {
 
 			egl.make_current(display, None, None, Some(context))?;
 
-			let gl = Rc::new(glow::Context::from_loader_function(|name| {
-				egl.get_proc_address(name).unwrap() as *const std::ffi::c_void
-			}));
-
 			Ok(EGLData {
 				egl,
 				display,
 				config,
 				context,
-				gl,
 			})
 		}
 	}
