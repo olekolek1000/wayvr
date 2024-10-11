@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use anyhow::bail;
@@ -9,6 +7,7 @@ use smithay::{
 			egl::types::{EGLBoolean, EGLImageKHR, EGLuint64KHR},
 			EGLint,
 		},
+		input::{Axis, AxisRelativeDirection},
 		renderer::{
 			element::{
 				surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
@@ -19,9 +18,13 @@ use smithay::{
 			Bind, Color32F, Frame, Renderer,
 		},
 	},
-	input::SeatState,
+	input::{
+		keyboard::KeyboardHandle,
+		pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle, PointerTarget},
+		SeatState,
+	},
 	reexports::wayland_server::{self, ListeningSocket},
-	utils::{Rectangle, Size, Transform},
+	utils::{Logical, Physical, Point, Rectangle, SerialCounter, Size, Transform},
 	wayland::{
 		compositor, selection::data_device::DataDeviceState, shell::xdg::XdgShellState, shm::ShmState,
 	},
@@ -47,11 +50,13 @@ pub struct DMAbufData {
 	pub fourcc: std::ffi::c_int,
 }
 
+#[allow(dead_code)]
 pub struct WayVR {
 	time_start: u64,
 	width: u32,
 	height: u32,
 	wayland_display_addr: String, // e.g. "wayland-20"
+	wayland_display_num: u32,
 	state: Application,
 	gles_renderer: GlesRenderer,
 	listener: ListeningSocket,
@@ -59,6 +64,9 @@ pub struct WayVR {
 	egl_data: egl_data::EGLData,
 	egl_image: khronos_egl::Image,
 	dmabuf_data: DMAbufData,
+	seat_keyboard: KeyboardHandle<Application>,
+	seat_pointer: PointerHandle<Application>,
+	serial_counter: SerialCounter,
 
 	// TODO: Cleanup of expired clients
 	clients: Vec<wayland_server::Client>,
@@ -106,22 +114,6 @@ pub type PFNEGLQUERYDMABUFFORMATSEXTPROC = Option<
 	) -> EGLBoolean,
 >;
 
-//eglExportDMABUFImageQueryMESA
-pub type PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC = Option<
-	unsafe extern "C" fn(
-		dpy: khronos_egl::EGLDisplay,
-		image: khronos_egl::EGLImage,
-		fourcc: *mut std::ffi::c_int,
-		num_planes: *mut std::ffi::c_int,
-		modifiers: *mut EGLuint64KHR,
-	) -> EGLBoolean,
->;
-
-const FOURCC: u32 = 0x34324258;
-
-const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: usize = 0x3443;
-const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: usize = 0x3444;
-
 impl WayVR {
 	pub fn new(width: u32, height: u32) -> anyhow::Result<Self> {
 		let display: wayland_server::Display<Application> = wayland_server::Display::new()?;
@@ -131,7 +123,11 @@ impl WayVR {
 		let mut seat_state = SeatState::new();
 		let shm = ShmState::new::<Application>(&dh, Vec::new());
 		let data_device = DataDeviceState::new::<Application>(&dh);
-		let _seat = seat_state.new_wl_seat(&dh, "wayvr");
+		let mut seat = seat_state.new_wl_seat(&dh, "wayvr");
+
+		// TODO: Keyboard repeat delay and rate?
+		let seat_keyboard = seat.add_keyboard(Default::default(), 100, 100)?;
+		let seat_pointer = seat.add_pointer();
 
 		let state = Application {
 			compositor,
@@ -145,8 +141,10 @@ impl WayVR {
 		let display_addr_idx = STARTING_WAYLAND_ADDR_IDX;
 		let mut try_idx = 0;
 		let mut wayland_display_addr;
+		let mut wayland_display_num;
 		let listener = loop {
 			wayland_display_addr = format!("wayland-{}", display_addr_idx);
+			wayland_display_num = display_addr_idx;
 			log::debug!("Trying to open socket \"{}\"", wayland_display_addr);
 			match ListeningSocket::bind(wayland_display_addr.as_str()) {
 				Ok(listener) => {
@@ -238,37 +236,6 @@ impl WayVR {
 		// Create dmabuf from EGL image
 
 		let mut dmabuf_data = unsafe {
-			/*let egl_export_dmabuf_image_query_mesa = bind_egl_function!(
-							PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC,
-							&egl_data.load_func("eglExportDMABUFImageQueryMESA")?
-						);
-
-						let mut fourcc = FOURCC as std::ffi::c_int;
-						let mut num_planes: std::ffi::c_int = 1;
-						let mut modifiers: [EGLuint64KHR; 16] = [0; 16];
-
-						if egl_export_dmabuf_image_query_mesa(
-							egl_data.display.as_ptr(),
-							egl_image.as_ptr(),
-							&mut fourcc,
-							&mut num_planes,
-							modifiers.as_mut_ptr(),
-						) != khronos_egl::TRUE
-						{
-							bail!("eglExportDMABUFImageQueryMESA failed")
-						}
-
-						//let modifier = 0x20000002086bf04;
-
-						if num_planes != 1 {
-							bail!("expected exactly one dmabuf plane")
-						}
-
-						let modifier = modifiers[0];
-						if modifier == 0xFFFFFFFFFFFFFF {
-							bail!("modifier is -1");
-						}
-			*/
 			let egl_export_dmabuf_image_mesa = bind_egl_function!(
 				PFNEGLEXPORTDMABUFIMAGEMESAPROC,
 				&egl_data.load_func("eglExportDMABUFImageMESA")?
@@ -329,7 +296,7 @@ impl WayVR {
 
 			for (idx, format) in formats.iter().enumerate() {
 				let bytes = format.to_le_bytes();
-				log::info!(
+				log::trace!(
 					"idx {}, format {}{}{}{} (hex {:#x})",
 					idx,
 					bytes[0] as char,
@@ -340,7 +307,7 @@ impl WayVR {
 				);
 			}
 
-			let target_format = 0x34325258; //XR24
+			let target_format = 0x34324258; //XB24
 			let egl_query_dmabuf_modifiers_ext = bind_egl_function!(
 				PFNEGLQUERYDMABUFMODIFIERSEXTPROC,
 				&egl_data.load_func("eglQueryDmaBufModifiersEXT")?
@@ -373,12 +340,27 @@ impl WayVR {
 			);
 
 			if mods[0] == 0xFFFFFFFFFFFFFFFF {
-				bail!("mods is -1")
+				bail!("modifier is -1")
 			}
 
-			log::info!("Mods:");
+			log::trace!("Modifier list:");
 			for modifier in &mods {
-				log::info!("{:#x}", modifier);
+				log::trace!("{:#x}", modifier);
+			}
+
+			// We should not change these modifier values. Passing all of them to the Vulkan dmabuf
+			// texture system causes significant graphical corruption due to invalid memory layout and
+			// tiling on this specific GPU model (very probably others also have the same issue).
+			// It is not guaranteed that this modifier will be present in other models.
+			// If not, the full list of modifiers will be passed. Further testing is required.
+			let mod_whitelist: [u64; 1] = [0x20000002086bf04 /* AMD RX 7800 XT */];
+
+			for modifier in &mod_whitelist {
+				if mods.contains(modifier) {
+					log::warn!("Using whitelisted dmabuf tiling modifier: {:#x}", modifier);
+					mods = vec![*modifier, 0x0 /* also important (???) */];
+					break;
+				}
 			}
 
 			dmabuf_data.modifiers = mods;
@@ -390,6 +372,7 @@ impl WayVR {
 		Ok(Self {
 			state,
 			wayland_display_addr,
+			wayland_display_num,
 			width,
 			height,
 			gles_renderer,
@@ -401,15 +384,31 @@ impl WayVR {
 			egl_data,
 			egl_image,
 			dmabuf_data,
+			seat_keyboard,
+			seat_pointer,
+			serial_counter: SerialCounter::new(),
 		})
 	}
 
-	pub fn spawn_process(&mut self, exec_path: &str, args: Vec<String>) -> anyhow::Result<()> {
+	fn set_default_env(&self, cmd: &mut std::process::Command) {
+		cmd.env_remove("DISPLAY"); // Goodbye X11
+		cmd.env("WAYLAND_DISPLAY", self.wayland_display_addr.as_str());
+	}
+
+	pub fn spawn_process(
+		&mut self,
+		exec_path: &str,
+		args: Vec<&str>,
+		env: Vec<(&str, &str)>,
+	) -> anyhow::Result<()> {
 		log::debug!("Spawning process");
 		let mut cmd = std::process::Command::new(exec_path);
-		cmd.env_remove("DISPLAY"); // prevent running XWayland apps for now
+		self.set_default_env(&mut cmd);
 		cmd.args(args);
-		cmd.env("WAYLAND_DISPLAY", self.wayland_display_addr.as_str());
+
+		for e in &env {
+			cmd.env(e.0, e.1);
+		}
 		let child = cmd.spawn()?;
 		self.process_children.push(child);
 		Ok(())
@@ -438,7 +437,7 @@ impl WayVR {
 			.collect();
 
 		let mut frame = self.gles_renderer.render(size, Transform::Normal)?;
-		frame.clear(Color32F::new(1.0, 1.0, 1.0, 0.1), &[damage])?;
+		frame.clear(Color32F::new(0.0, 0.0, 0.0, 0.5), &[damage])?;
 
 		draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
 
@@ -472,13 +471,101 @@ impl WayVR {
 		Ok(())
 	}
 
-	pub fn send_mouse_move(&mut self, _x: u32, _y: u32) {}
+	fn get_mouse_index_number(index: MouseIndex) -> u32 {
+		match index {
+			MouseIndex::Left => 0x110,   /* BTN_LEFT */
+			MouseIndex::Center => 0x112, /* BTN_MIDDLE */
+			MouseIndex::Right => 0x111,  /* BTN_RIGHT */
+		}
+	}
 
-	pub fn send_mouse_down(&mut self, _index: MouseIndex) {}
+	pub fn send_mouse_move(&mut self, x: u32, y: u32) {
+		let point = Point::<f64, Logical>::from((x as f64, y as f64));
+		if let Some(surf) = self.get_focus_surface(point) {
+			self.seat_pointer.motion(
+				&mut self.state,
+				Some((surf, Point::from((0.0, 0.0)))),
+				&MotionEvent {
+					serial: self.serial_counter.next_serial(),
+					time: 0,
+					location: point,
+				},
+			);
 
-	pub fn send_mouse_up(&mut self, _index: MouseIndex) {}
+			self.seat_pointer.frame(&mut self.state);
+		}
+	}
 
-	pub fn send_mouse_scroll(&mut self, _delta: f32) {}
+	fn get_focus_surface(
+		&mut self,
+		_pos: Point<f64, Logical>,
+	) -> Option<wayland_server::protocol::wl_surface::WlSurface> {
+		self
+			.state
+			.xdg_shell
+			.toplevel_surfaces()
+			.iter()
+			.next()
+			.cloned()
+			.map(|surface| surface.wl_surface().clone())
+	}
+
+	pub fn send_mouse_down(&mut self, index: MouseIndex) {
+		// Change keyboard focus to pressed window
+		if let Some(surf) = self.get_focus_surface(self.seat_pointer.current_location()) {
+			if self.seat_keyboard.current_focus().is_none() {
+				self.seat_keyboard.set_focus(
+					&mut self.state,
+					Some(surf),
+					self.serial_counter.next_serial(),
+				);
+			}
+		}
+
+		self.seat_pointer.button(
+			&mut self.state,
+			&ButtonEvent {
+				button: WayVR::get_mouse_index_number(index),
+				serial: self.serial_counter.next_serial(),
+				time: 0,
+				state: smithay::backend::input::ButtonState::Pressed,
+			},
+		);
+
+		self.seat_pointer.frame(&mut self.state);
+	}
+
+	pub fn send_mouse_up(&mut self, index: MouseIndex) {
+		self.seat_pointer.button(
+			&mut self.state,
+			&ButtonEvent {
+				button: WayVR::get_mouse_index_number(index),
+				serial: self.serial_counter.next_serial(),
+				time: 0,
+				state: smithay::backend::input::ButtonState::Released,
+			},
+		);
+
+		self.seat_pointer.frame(&mut self.state);
+	}
+
+	pub fn send_mouse_scroll(&mut self, delta: f32) {
+		self.seat_pointer.axis(
+			&mut self.state,
+			AxisFrame {
+				source: None,
+				relative_direction: (
+					AxisRelativeDirection::Identical,
+					AxisRelativeDirection::Identical,
+				),
+				time: 0,
+				axis: (0.0, -delta as f64),
+				v120: Some((0, (delta * -120.0) as i32)),
+				stop: (false, false),
+			},
+		);
+		self.seat_pointer.frame(&mut self.state);
+	}
 
 	pub fn get_dmabuf_data(&self) -> DMAbufData {
 		self.dmabuf_data.clone()

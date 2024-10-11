@@ -12,7 +12,7 @@ mod tests {
 
 	fn run() -> Result<(), Box<dyn std::error::Error>> {
 		let mut wayvr = wayvr::WayVR::new(1280, 720)?;
-		wayvr.spawn_process("konsole", Vec::new())?;
+		wayvr.spawn_process("konsole", Vec::new(), Vec::new())?;
 
 		for _ in 0..100 {
 			wayvr.tick()?;

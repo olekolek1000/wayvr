@@ -1,5 +1,8 @@
 use super::egl_data;
-use smithay::backend::egl as smithay_egl;
+use smithay::{
+	backend::egl as smithay_egl, reexports::wayland_server::protocol::wl_surface::WlSurface,
+	xwayland::X11Surface,
+};
 
 pub fn get_egl_display(data: &egl_data::EGLData) -> anyhow::Result<smithay_egl::EGLDisplay> {
 	Ok(unsafe { smithay_egl::EGLDisplay::from_raw(data.display.as_ptr(), data.config.as_ptr())? })
