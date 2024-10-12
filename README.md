@@ -54,9 +54,14 @@ cd wlx
 
 # Supported hardware
 
-- Tested GPUs: AMD RX 7800 XT
+### Confirmed working GPUs
 
-- Your GPU here? (Let me know!)
+- Navi 32 family: AMD Radeon RX 7800 XT **\***
+- Navi 23 family: AMD Radeon RX 6600 XT
+- Navi 21 family: AMD Radeon Pro W6800
+- _Your GPU here? (Let me know!)_
+
+**\*** - With dmabuf modifier mitigation (probably Mesa bug)
 
 # Supported software
 
@@ -64,6 +69,8 @@ cd wlx
 - Most XWayland applications via `cage`
 
 # Known issues
+
+- Context menus are not functional in most cases yet
 
 - Due to unknown circumstances, dma-buf textures may display various graphical glitches due to invalid dma-buf tiling modifier. Please report your GPU model when filing an issue. Alternatively, you can run wlx-overlay-s with `LIBGL_ALWAYS_SOFTWARE=1` to mitigate that (Smithay compositor will be running in software renderer mode).
 
