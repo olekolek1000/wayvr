@@ -138,8 +138,7 @@ impl WayVR {
 		};
 
 		// Try "wayland-20", "wayland-21", "wayland-22"...
-		let display_addr_idx = STARTING_WAYLAND_ADDR_IDX;
-		let mut try_idx = 0;
+		let mut display_addr_idx = STARTING_WAYLAND_ADDR_IDX;
 		let mut wayland_display_addr;
 		let mut wayland_display_num;
 		let listener = loop {
@@ -158,8 +157,8 @@ impl WayVR {
 						e
 					);
 
-					try_idx += 1;
-					if try_idx > 20 {
+					display_addr_idx += 1;
+					if display_addr_idx > STARTING_WAYLAND_ADDR_IDX + 20 {
 						// Highly unlikely for the user to have 20 Wayland displays enabled at once. Return error instead.
 						return Err(anyhow::anyhow!("Failed to create wayland-server socket"))?;
 					}
@@ -401,7 +400,7 @@ impl WayVR {
 		args: Vec<&str>,
 		env: Vec<(&str, &str)>,
 	) -> anyhow::Result<()> {
-		log::debug!("Spawning process");
+		log::info!("Spawning subprocess with exec path \"{}\"", exec_path);
 		let mut cmd = std::process::Command::new(exec_path);
 		self.set_default_env(&mut cmd);
 		cmd.args(args);
@@ -409,8 +408,20 @@ impl WayVR {
 		for e in &env {
 			cmd.env(e.0, e.1);
 		}
-		let child = cmd.spawn()?;
-		self.process_children.push(child);
+
+		match cmd.spawn() {
+			Ok(child) => {
+				self.process_children.push(child);
+			}
+			Err(e) => {
+				bail!(
+					"Failed to launch process with path \"{}\": {}. Make sure your exec path exists.",
+					exec_path,
+					e
+				);
+			}
+		}
+
 		Ok(())
 	}
 
