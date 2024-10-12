@@ -54,7 +54,7 @@ cd wlx
 
 # Supported hardware
 
-- Tested: AMD RX 7800
+- Tested GPUs: AMD RX 7800 XT
 
 - Your GPU here? (Let me know!)
 
