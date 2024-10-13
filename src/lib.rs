@@ -1,5 +1,7 @@
+mod client;
 mod comp;
 pub mod egl_data;
+mod egl_ex;
 mod smithay_wrapper;
 mod time;
 pub mod wayvr;
