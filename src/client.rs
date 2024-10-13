@@ -18,6 +18,7 @@ use smithay::{
 use crate::{
 	comp::{self, send_frames_surface_tree},
 	wayvr::{self, WaylandEnv},
+	window,
 };
 
 struct Process {
@@ -29,6 +30,7 @@ impl Drop for Process {
 		let _dont_care = self.child.kill();
 	}
 }
+
 pub struct ClientManager {
 	state: comp::Application,
 	display: wayland_server::Display<comp::Application>,
@@ -39,7 +41,7 @@ pub struct ClientManager {
 	seat_pointer: PointerHandle<comp::Application>,
 
 	clients: Vec<wayland_server::Client>,
-
+	wm: window::WindowManager,
 	processes: Vec<Process>,
 }
 
@@ -49,6 +51,8 @@ impl ClientManager {
 		display: wayland_server::Display<comp::Application>,
 		seat_keyboard: KeyboardHandle<comp::Application>,
 		seat_pointer: PointerHandle<comp::Application>,
+		disp_width: u32,
+		disp_height: u32,
 	) -> anyhow::Result<Self> {
 		let (wayland_env, listener) = create_wayland_listener()?;
 
@@ -62,6 +66,7 @@ impl ClientManager {
 			serial_counter: SerialCounter::new(),
 			processes: Vec::new(),
 			clients: Vec::new(),
+			wm: window::WindowManager::new(disp_width, disp_height),
 		})
 	}
 
@@ -101,14 +106,8 @@ impl ClientManager {
 		Ok(())
 	}
 
-	pub fn tick_render(
-		&mut self,
-		renderer: &mut GlesRenderer,
-		width: u32,
-		height: u32,
-		time_ms: u64,
-	) -> anyhow::Result<()> {
-		let size = Size::from((width as i32, height as i32));
+	pub fn tick_render(&mut self, renderer: &mut GlesRenderer, time_ms: u64) -> anyhow::Result<()> {
+		let size = Size::from((self.wm.disp_width as i32, self.wm.disp_height as i32));
 		let damage: Rectangle<i32, smithay::utils::Physical> =
 			Rectangle::from_loc_and_size((0, 0), size);
 
@@ -117,11 +116,13 @@ impl ClientManager {
 			.xdg_shell
 			.toplevel_surfaces()
 			.iter()
-			.flat_map(|surface| {
+			.flat_map(|toplevel_surf| {
+				let win = self.wm.get_window(toplevel_surf);
+
 				render_elements_from_surface_tree(
 					renderer,
-					surface.wl_surface(),
-					(0, 0),
+					toplevel_surf.wl_surface(),
+					(win.pos_x, win.pos_y),
 					1.0,
 					1.0,
 					Kind::Unspecified,
@@ -177,23 +178,28 @@ impl ClientManager {
 		}
 	}
 
-	fn get_focus_surface(
-		&mut self,
-		_pos: Point<f64, Logical>,
-	) -> Option<wayland_server::protocol::wl_surface::WlSurface> {
-		self
-			.state
-			.xdg_shell
-			.toplevel_surfaces()
-			.iter()
-			.next()
-			.cloned()
-			.map(|surface| surface.wl_surface().clone())
+	fn get_hovered_window(&mut self, cursor_x: u32, cursor_y: u32) -> Option<&window::Window> {
+		for cell in self.wm.windows.vec.iter().flatten() {
+			let window = &cell.obj;
+			if (cursor_x as i32) >= window.pos_x
+				&& (cursor_x as i32) < window.pos_x + window.size_x as i32
+				&& (cursor_y as i32) >= window.pos_y
+				&& (cursor_y as i32) < window.pos_y + window.size_y as i32
+			{
+				return Some(window);
+			}
+		}
+		None
 	}
 
 	pub fn send_mouse_move(&mut self, x: u32, y: u32) {
-		let point = Point::<f64, Logical>::from((x as f64, y as f64));
-		if let Some(surf) = self.get_focus_surface(point) {
+		if let Some(window) = self.get_hovered_window(x, y) {
+			let surf = window.toplevel.wl_surface().clone();
+			let point = Point::<f64, Logical>::from((
+				(x as i32 - window.pos_x) as f64,
+				(y as i32 - window.pos_y) as f64,
+			));
+
 			self.seat_pointer.motion(
 				&mut self.state,
 				Some((surf, Point::from((0.0, 0.0)))),
@@ -210,7 +216,11 @@ impl ClientManager {
 
 	pub fn send_mouse_down(&mut self, index: wayvr::MouseIndex) {
 		// Change keyboard focus to pressed window
-		if let Some(surf) = self.get_focus_surface(self.seat_pointer.current_location()) {
+		let loc = self.seat_pointer.current_location();
+
+		if let Some(window) = self.get_hovered_window(loc.x.max(0.0) as u32, loc.y.max(0.0) as u32) {
+			let surf = window.toplevel.wl_surface().clone();
+
 			if self.seat_keyboard.current_focus().is_none() {
 				self.seat_keyboard.set_focus(
 					&mut self.state,

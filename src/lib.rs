@@ -2,9 +2,11 @@ mod client;
 mod comp;
 pub mod egl_data;
 mod egl_ex;
+mod id;
 mod smithay_wrapper;
 mod time;
 pub mod wayvr;
+mod window;
 
 pub use khronos_egl;
 

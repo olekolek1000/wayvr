@@ -78,4 +78,4 @@ cd wlx
 
 - Even though some applications support Wayland, some still check for the `DISPLAY` environment variable and an available X11 server (looking at you, Chromium).
 
-- GNOME still insists on rendering client-side decorations in 2024 instead of server-side ones. This results in all GTK applications looking odd due to additional window shadows.
+- GNOME still insists on rendering client-side decorations in 2024 instead of server-side ones. This results in all GTK applications looking odd due to additional window shadows. [Fix here, "Client-side decorations"](https://wiki.archlinux.org/title/GTK)

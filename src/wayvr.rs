@@ -29,8 +29,6 @@ impl WaylandEnv {
 #[allow(dead_code)]
 pub struct WayVR {
 	time_start: u64,
-	width: u32,
-	height: u32,
 	gles_renderer: GlesRenderer,
 	egl_data: egl_data::EGLData,
 	egl_image: khronos_egl::Image,
@@ -46,7 +44,7 @@ pub enum MouseIndex {
 }
 
 impl WayVR {
-	pub fn new(width: u32, height: u32) -> anyhow::Result<Self> {
+	pub fn new(disp_width: u32, disp_height: u32) -> anyhow::Result<Self> {
 		let display: wayland_server::Display<Application> = wayland_server::Display::new()?;
 		let dh = display.handle();
 		let compositor = compositor::CompositorState::new::<Application>(&dh);
@@ -78,27 +76,38 @@ impl WayVR {
 		let internal_format = ffi::RGBA8;
 
 		let tex_id = gles_renderer.with_context(|gl| {
-			smithay_wrapper::create_framebuffer_texture(gl, width, height, tex_format, internal_format)
+			smithay_wrapper::create_framebuffer_texture(
+				gl,
+				disp_width,
+				disp_height,
+				tex_format,
+				internal_format,
+			)
 		})?;
-		let egl_image = egl_data.create_egl_image(tex_id, width, height)?;
+		let egl_image = egl_data.create_egl_image(tex_id, disp_width, disp_height)?;
 		let dmabuf_data = egl_data.create_dmabuf_data(&egl_image)?;
 
 		let opaque = false;
-		let size = (width as i32, height as i32).into();
+		let size = (disp_width as i32, disp_height as i32).into();
 		let gles_texture =
 			unsafe { GlesTexture::from_raw(&gles_renderer, Some(tex_format), opaque, tex_id, size) };
 
 		gles_renderer.bind(gles_texture)?;
 
 		Ok(Self {
-			width,
-			height,
 			gles_renderer,
 			time_start,
 			egl_data,
 			egl_image,
 			dmabuf_data,
-			client_manager: client::ClientManager::new(state, display, seat_keyboard, seat_pointer)?,
+			client_manager: client::ClientManager::new(
+				state,
+				display,
+				seat_keyboard,
+				seat_pointer,
+				disp_width,
+				disp_height,
+			)?,
 		})
 	}
 
@@ -117,7 +126,7 @@ impl WayVR {
 
 		self
 			.client_manager
-			.tick_render(&mut self.gles_renderer, self.width, self.height, time_ms)?;
+			.tick_render(&mut self.gles_renderer, time_ms)?;
 		self.client_manager.tick_wayland()?;
 
 		self.gles_renderer.with_context(|gl| unsafe {
