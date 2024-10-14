@@ -33,15 +33,14 @@ cd wlx
 
 - [✅] Basic Wayland compositor renderer
 - [✅] Mouse input support
+- [✅] Window focus support
 - [🚧] Import mouse behaviour settings from wlx-overlay-s config (click freeze-time)
 - [🚧] Basic cursor pointer rendering
+- [🚧] Change window geometry
 - [📌] Spawn processes via config and customizable ui buttons directly from wlx
 - [📌] CPU fallback in case if dma-buf is not available
 - [📌] Show/hide support
-- [📌] IPC between spawned processes and wlx-overlay-s for better integration (remote process spawning in separate compositors, access wlx info and internals)
 - [📌] Keyboard input (and keyboard focus control in wlx)
-- [📌] Proper window focus support (in case of multiple windows)
-- [📌] Change window geometry
 - [📌] Change compositor resolution on the fly
 - [👀] Dedicated dashboard?
 - [👀] Direct Gamescope support?
