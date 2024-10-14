@@ -23,7 +23,7 @@ git clone --branch wayvr https://github.com/olekolek1000/wlx-overlay-s wlx
 cd wlx
 ```
 
-2. Change your startup application in `src/overlays/wayvr.rs` (search for `spawn_process`).
+2. Change your startup application list in `src/backend/common.rs` (search for `WayVRProcess` and modify the code accordingly).
 
 3. Start wlx-overlay-s: `cargo run`
 
@@ -58,7 +58,8 @@ cd wlx
 
 - Navi 32 family: AMD Radeon RX 7800 XT **\***
 - Navi 23 family: AMD Radeon RX 6600 XT
-- Navi 21 family: AMD Radeon Pro W6800
+- Navi 21 family: AMD Radeon Pro W6800, AMD Radeon RX 6800 XT
+- Nvidia GTX 16 Series
 - _Your GPU here? (Let me know!)_
 
 **\*** - With dmabuf modifier mitigation (probably Mesa bug)

@@ -38,42 +38,18 @@ impl Window {
 	}
 }
 
-gen_id!(WindowVec, Window, WindowCell, WindowHandle);
-
 pub struct WindowManager {
-	pub disp_width: u32,
-	pub disp_height: u32,
-
 	pub windows: WindowVec,
 }
 
 impl WindowManager {
-	pub fn new(disp_width: u32, disp_height: u32) -> Self {
+	pub fn new() -> Self {
 		Self {
 			windows: WindowVec::new(),
-			disp_width,
-			disp_height,
 		}
 	}
 
-	fn reposition_windows(&mut self) {
-		let window_count = self.windows.vec.iter().flatten().count();
-
-		for (i, cell) in self.windows.vec.iter_mut().flatten().enumerate() {
-			let window = &mut cell.obj;
-
-			let d_cur = i as f32 / window_count as f32;
-			let d_next = (i + 1) as f32 / window_count as f32;
-
-			let left = (d_cur * self.disp_width as f32) as i32;
-			let right = (d_next * self.disp_width as f32) as i32;
-
-			window.set_pos(left, 0);
-			window.set_size((right - left) as u32, self.disp_height);
-		}
-	}
-
-	fn find_window_handle(&self, toplevel: &ToplevelSurface) -> Option<WindowHandle> {
+	pub fn find_window_handle(&self, toplevel: &ToplevelSurface) -> Option<WindowHandle> {
 		for (idx, cell) in self.windows.vec.iter().enumerate() {
 			if let Some(cell) = cell {
 				let window = &cell.obj;
@@ -85,24 +61,9 @@ impl WindowManager {
 		None
 	}
 
-	fn create_window_handle(&mut self, toplevel: &ToplevelSurface) -> WindowHandle {
+	pub fn create_window(&mut self, toplevel: &ToplevelSurface) -> WindowHandle {
 		self.windows.add(Window::new(toplevel))
 	}
-
-	pub fn get_window_handle(&mut self, toplevel: &ToplevelSurface) -> WindowHandle {
-		// Check for existing window handle
-		if let Some(handle) = self.find_window_handle(toplevel) {
-			return handle;
-		}
-
-		let handle = self.create_window_handle(toplevel);
-		self.reposition_windows();
-
-		handle
-	}
-
-	pub fn get_window(&mut self, toplevel: &ToplevelSurface) -> &Window {
-		let handle = self.get_window_handle(toplevel);
-		self.windows.get(&handle).unwrap() // never fails
-	}
 }
+
+gen_id!(WindowVec, Window, WindowCell, WindowHandle);

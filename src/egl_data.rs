@@ -135,7 +135,7 @@ impl EGLData {
 				&mut num_formats,
 			);
 
-			for (idx, format) in formats.iter().enumerate() {
+			/*for (idx, format) in formats.iter().enumerate() {
 				let bytes = format.to_le_bytes();
 				log::trace!(
 					"idx {}, format {}{}{}{} (hex {:#x})",
@@ -146,7 +146,7 @@ impl EGLData {
 					bytes[3] as char,
 					format
 				);
-			}
+			}*/
 
 			let egl_query_dmabuf_modifiers_ext = bind_egl_function!(
 				PFNEGLQUERYDMABUFMODIFIERSEXTPROC,

@@ -2,7 +2,7 @@ use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_seat, wl_surface};
-use smithay::reexports::wayland_server::{self};
+use smithay::reexports::wayland_server::{self, Resource};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{
@@ -26,12 +26,16 @@ use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use wayland_server::protocol::wl_surface::WlSurface;
 use wayland_server::Client;
 
+use crate::event_queue::SyncEventQueue;
+
 pub struct Application {
 	pub compositor: compositor::CompositorState,
 	pub xdg_shell: XdgShellState,
 	pub seat_state: SeatState<Application>,
 	pub shm: ShmState,
 	pub data_device: DataDeviceState,
+
+	pub queue_new_toplevel: SyncEventQueue<(ClientId, ToplevelSurface)>,
 }
 
 impl compositor::CompositorHandler for Application {
@@ -120,6 +124,9 @@ impl XdgShellHandler for Application {
 	}
 
 	fn new_toplevel(&mut self, surface: ToplevelSurface) {
+		if let Some(client) = surface.wl_surface().client() {
+			self.queue_new_toplevel.send((client.id(), surface.clone()));
+		}
 		surface.with_pending_state(|state| {
 			state.states.set(xdg_toplevel::State::Activated);
 		});
