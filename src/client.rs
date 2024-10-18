@@ -1,6 +1,7 @@
 use std::{io::Read, os::unix::net::UnixStream, sync::Arc};
 
 use smithay::{
+	backend::input::Keycode,
 	input::{keyboard::KeyboardHandle, pointer::PointerHandle},
 	reexports::wayland_server,
 	utils::SerialCounter,
@@ -122,6 +123,23 @@ impl WayVRManager {
 		self.display.flush_clients()?;
 
 		Ok(())
+	}
+
+	pub fn send_key(&mut self, virtual_key: u32, down: bool) {
+		let state = if down {
+			smithay::backend::input::KeyState::Pressed
+		} else {
+			smithay::backend::input::KeyState::Released
+		};
+
+		self.seat_keyboard.input::<(), _>(
+			&mut self.state,
+			Keycode::new(virtual_key),
+			state,
+			self.serial_counter.next_serial(),
+			0,
+			|_, _, _| smithay::input::keyboard::FilterResult::Forward,
+		);
 	}
 }
 

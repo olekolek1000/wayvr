@@ -165,6 +165,10 @@ impl WayVR {
 		}
 	}
 
+	pub fn send_key(&mut self, virtual_key: u32, down: bool) {
+		self.manager.send_key(virtual_key, down);
+	}
+
 	pub fn get_dmabuf_data(&self, display: display::DisplayHandle) -> Option<egl_data::DMAbufData> {
 		self
 			.displays
