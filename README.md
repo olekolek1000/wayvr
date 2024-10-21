@@ -1,3 +1,7 @@
+# Archived repo
+
+# WayVR has been integrated directly into [wlx-overlay-s](https://github.com/galister/wlx-overlay-s).
+
 <p align="center">
 	<img src="./contrib/logo_traced.svg" height="180"/>
 </p>
